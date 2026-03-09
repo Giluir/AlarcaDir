@@ -20,8 +20,7 @@ export const TopFilesPanel: React.FC<Props> = React.memo(({ files }) => {
     }, [files, filter]);
 
     const openExplorer = async (path: string) => {
-        const parent = path.includes('\\') ? path.slice(0, path.lastIndexOf('\\')) : path;
-        try { await invoke('open_explorer', { path: parent }); } catch { /* ignore */ }
+        try { await invoke('open_explorer', { path }); } catch { /* ignore */ }
     };
 
     if (files.length === 0) {

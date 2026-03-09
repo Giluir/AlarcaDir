@@ -291,10 +291,17 @@ fn cancel_scan(state: State<'_, AppState>) {
 #[tauri::command]
 fn open_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    std::process::Command::new("explorer")
-        .arg(&path)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    {
+        let p = std::path::Path::new(&path);
+        let mut cmd = std::process::Command::new("explorer");
+        if p.is_file() {
+            cmd.arg("/select,");
+            cmd.arg(&path);
+        } else {
+            cmd.arg(&path);
+        }
+        cmd.spawn().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
