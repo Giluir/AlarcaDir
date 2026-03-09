@@ -10,6 +10,7 @@ import { FileTypeDistribution } from './components/FileTypeDistribution';
 import { TreemapChart } from './components/TreemapChart';
 import { TopFilesPanel } from './components/TopFilesPanel';
 import { DuplicatesPage, DupeState, INITIAL_DUPE_STATE } from './components/DuplicatesPage';
+import { AdminAlert } from './components/AdminAlert';
 
 
 function App() {
@@ -18,6 +19,7 @@ function App() {
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<ProgressPayload | null>(null);
   const [scanResult, setScanResult] = useState<DirectoryNode | null>(null);
+  const [showAdminAlert, setShowAdminAlert] = useState(false);
 
   // Sidebar: default collapsed, persisted
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
@@ -67,6 +69,12 @@ function App() {
   }, [currentRoot]);
 
   useEffect(() => {
+    invoke<boolean>('check_admin')
+      .then(res => {
+        if (!res) setShowAdminAlert(true);
+      })
+      .catch(e => console.error("Admin check failed:", e));
+
     invoke<string[]>('get_drives')
       .then((dList) => {
         setDrives(dList);
@@ -356,6 +364,7 @@ function App() {
 
         )}
       </main>
+      {showAdminAlert && <AdminAlert onClose={() => setShowAdminAlert(false)} />}
     </div>
   );
 }

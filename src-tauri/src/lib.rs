@@ -305,6 +305,36 @@ fn open_explorer(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn check_admin() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        unsafe {
+            let mut token = HANDLE::default();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_ok() {
+                let mut elevation = TOKEN_ELEVATION::default();
+                let mut size = std::mem::size_of::<TOKEN_ELEVATION>() as u32;
+                if GetTokenInformation(
+                    token,
+                    TokenElevation,
+                    Some(&mut elevation as *mut _ as *mut _),
+                    size,
+                    &mut size,
+                )
+                .is_ok()
+                {
+                    return elevation.TokenIsElevated != 0;
+                }
+            }
+        }
+    }
+    false
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -325,6 +355,7 @@ pub fn run() {
             open_explorer,
             start_find_duplicates,
             verify_duplicates,
+            check_admin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application")
