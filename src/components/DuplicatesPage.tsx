@@ -103,15 +103,16 @@ const DuplicateGroupRow: React.FC<{
                     {g.verified ? '已验证' : '待验证'}
                 </span>
 
+                <span className="dup-header-name" title={g.paths[0]}>{g.paths[0].split(/[\\/]/).pop()}</span>
                 <span className="dup-copies">{g.paths.length} 份</span>
                 <span className="dup-size-per">{formatBytes(g.bytes)} / 份</span>
 
-                <span className={g.verified ? 'dup-wasted pt-verified' : 'dup-wasted-estimate pt-unverified'}>
+                <span className={g.verified ? 'dup-wasted' : 'dup-wasted-estimate'}>
                     {g.verified ? '' : '预计'}可释放 {formatBytes(wasted)}
                 </span>
 
                 <span className={`dup-hash-prefix ${g.verified ? 'verified' : ''}`} title={g.hash}>
-                    {g.hash.slice(0, 10)}…
+                    {g.hash.slice(0, 8)}…
                 </span>
             </div>
 

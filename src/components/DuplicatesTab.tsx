@@ -116,10 +116,11 @@ export const DuplicatesTab: React.FC<Props> = ({ candidates, hasScanned }) => {
                                 <span className="dup-chevron">
                                     {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                                 </span>
+                                <span className="dup-header-name" title={g.paths[0]}>{g.paths[0].split(/[\\/]/).pop()}</span>
                                 <span className="dup-copies">{g.paths.length} 份</span>
-                                <span className="dup-size">{formatBytes(g.bytes)} / 份</span>
+                                <span className="dup-size-per">{formatBytes(g.bytes)} / 份</span>
                                 <span className="dup-wasted">可释放 {formatBytes(g.wasted)}</span>
-                                <span className="dup-hash" title={g.hash}>{g.hash.slice(0, 12)}…</span>
+                                <span className="dup-hash-prefix" title={g.hash}>{g.hash.slice(0, 8)}…</span>
                             </div>
                             {isExpanded && (
                                 <div className="dup-paths">

@@ -1230,35 +1230,53 @@ h1 {
   color: var(--text-secondary);
 }
 
-.dup-copies {
-  font-weight: 600;
+.dup-header-name {
   color: var(--text-primary);
-  width: 48px;
+  font-weight: 600;
+  margin-left: 12px;
+  flex: 1; /* Filename takes up remaining space */
+  min-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dup-copies {
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  width: 60px; /* Fixed column width */
   text-align: right;
   flex-shrink: 0;
 }
 
 .dup-size-per {
   color: var(--text-secondary);
-  width: 100px;
+  width: 110px; /* Fixed column width */
   text-align: right;
   flex-shrink: 0;
+  margin-left: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dup-wasted-estimate,
+.dup-wasted {
+  width: 150px; /* Fixed column width */
+  text-align: right;
+  flex-shrink: 0;
+  margin-left: 15px;
+  font-variant-numeric: tabular-nums;
 }
 
 .dup-wasted-estimate {
   color: var(--text-secondary);
-  flex: 1;
   font-size: 0.75rem;
-  text-align: left;
-  padding-left: 10px;
+  opacity: 0.8;
 }
 
 .dup-wasted {
   color: var(--danger-color);
   font-weight: 600;
-  flex: 1;
-  text-align: left;
-  padding-left: 10px;
 }
 
 .pt-unverified {
@@ -1273,6 +1291,10 @@ h1 {
 .dup-hash-prefix {
   font-size: 0.70rem;
   color: var(--border-color);
+  width: 80px; /* Fixed column width */
+  text-align: right;
+  flex-shrink: 0;
+  margin-left: 15px;
 }
 
 .dup-hash-prefix.verified {
