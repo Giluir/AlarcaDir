@@ -1,5 +1,5 @@
 // scanner/mod.rs
-// Unified scan entry point: tries NTFS MFT fast-path, falls back to jwalk.
+// Unified scan entry point: tries NTFS MFT fast-path, falls back to direct NT API scan.
 
 pub mod types;
 pub mod ntfs;
@@ -14,7 +14,7 @@ pub use types::{CancelFlag, FlatNode, ProgressReporter, ScanCounters, ScanResult
 ///
 /// Strategy:
 ///   1. Attempt NTFS MFT fast-path (Windows, requires admin + NTFS).
-///   2. If unavailable, fall back to parallel jwalk-based recursive scan.
+///   2. If unavailable, fall back to optimized recursive scan using direct NT APIs.
 pub fn scan_path(
     root_path: &str,
     cancel: CancelFlag,

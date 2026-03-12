@@ -24,7 +24,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rayon = "1.10"
 sha2 = "0.10"
-jwalk = "0.8"
 notify = "6.1.1"
 notify-debouncer-mini = "0.4"
 
