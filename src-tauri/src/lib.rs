@@ -1,5 +1,6 @@
 pub mod scanner;
 pub mod watcher;
+pub mod exporter;
 
 use std::collections::HashMap;
 use std::io::Read;
