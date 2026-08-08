@@ -52,7 +52,7 @@ pub fn export_to_sqlite(root_path: &str, db_path: &str) -> Result<usize, String>
     {
         let mut stmt = tx
             .prepare_cached(
-                "INSERT OR REPLACE INTO raw_tree_nodes 
+                "INSERT OR IGNORE INTO raw_tree_nodes 
                 (path, name, parent_path, is_dir, size, created_at, modified_at, mft_id)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
@@ -104,5 +104,7 @@ pub fn export_to_sqlite(root_path: &str, db_path: &str) -> Result<usize, String>
     }
 
     tx.commit().map_err(|e| e.to_string())?;
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_parent ON raw_tree_nodes(parent_path);", [])
+        .map_err(|e| e.to_string())?;
     Ok(nodes.len())
 }
