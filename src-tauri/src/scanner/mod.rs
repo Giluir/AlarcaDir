@@ -24,10 +24,12 @@ pub fn scan_path(
 
     // Fast path: NTFS MFT
     if let Some(result) = ntfs::scan(root_path, &cancel, progress, &counters) {
+        println!("[AlarcaDir Engine] Mode: NTFS MFT Fast-Path Scan");
         return result;
     }
 
     // Fallback: parallel recursive scan
+    println!("[AlarcaDir Engine] Mode: Fallback Parallel Recursive NT API Scan (MFT Unreachable)");
     let result = basic::scan(root_path, &cancel, progress, &counters);
     result
 }
