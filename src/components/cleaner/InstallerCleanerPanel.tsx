@@ -1,16 +1,14 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
   ShieldCheck,
   AlertTriangle,
-  Trash2,
-  Archive,
-  FolderOpen,
   RefreshCw,
   Search,
-  CheckSquare,
-  Square,
-  Info,
+  Archive,
+  Trash2,
+  FolderOpen,
+  X,
   Tag,
   CheckCircle2,
   XCircle,
@@ -22,116 +20,175 @@ interface InstallerCleanerPanelProps {
   onAdminAlert?: () => void;
 }
 
-export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = () => {
-  const [loading, setLoading] = useState(false);
-  const [scanResult, setScanResult] = useState<CleanerScanResult | null>(null);
+// Module-level cache to keep clean list stable across re-renders and tab switches
+let cachedScanResult: CleanerScanResult | null = null;
+let cachedSelectedPaths: Set<string> | null = null;
+
+export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = React.memo(({ onAdminAlert }) => {
+  const [scanResult, setScanResult] = useState<CleanerScanResult | null>(() => cachedScanResult);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [executing, setExecuting] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
-  const [searchTerm, setSearchTerm] = useState('');
+
+  // Filter & Search states
+  const [searchTerm, setSearchTerm] = useState<string>('');
   const [filterRec, setFilterRec] = useState<'all' | 'safe' | 'caution'>('all');
 
-  // Action modals
+  // Selected paths for action (initialized from cache if available)
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(
+    () => (cachedSelectedPaths ? new Set(cachedSelectedPaths) : new Set())
+  );
+
+  // Stable ref for onAdminAlert so runScan has [] dependencies and never re-runs due to parent renders
+  const onAdminAlertRef = useRef(onAdminAlert);
+  useEffect(() => {
+    onAdminAlertRef.current = onAdminAlert;
+  }, [onAdminAlert]);
+
+  // Modal dialog states
   const [actionType, setActionType] = useState<'quarantine' | 'rename' | 'delete' | null>(null);
-  const [quarantineDir, setQuarantineDir] = useState('C:\\Windows\\Installer\\.quarantine');
-  const [executing, setExecuting] = useState(false);
+  const [quarantineDir, setQuarantineDir] = useState<string>('C:\\Windows\\Installer\\.quarantine');
+  const [renamePrefix, setRenamePrefix] = useState<string>('!UnUsed - ');
   const [execResult, setExecResult] = useState<CleanExecutionResult | null>(null);
 
-  const runScan = useCallback(async () => {
+  // Run scan (strictly manual or post-execution, 100% decoupled from Watcher events)
+  const runScan = useCallback(async (force = false) => {
+    if (!force && cachedScanResult) {
+      setScanResult(cachedScanResult);
+      if (cachedSelectedPaths) setSelectedPaths(new Set(cachedSelectedPaths));
+      return;
+    }
+
     setLoading(true);
     setError(null);
-    setSelectedPaths(new Set());
     setExecResult(null);
-
     try {
       const res = await invoke<CleanerScanResult>('cleaner_scan', {
         pluginId: 'windows_installer',
       });
+      cachedScanResult = res;
       setScanResult(res);
-      // Auto-select items marked as SafeToQuarantine
-      const initialSelected = new Set<string>();
-      res.items.forEach((item) => {
+
+      // Pre-select items recommended as SafeToQuarantine
+      const initialSafe = new Set<string>();
+      for (const item of res.items) {
         if (item.recommendation === 'SafeToQuarantine') {
-          initialSelected.add(item.path);
+          initialSafe.add(item.path);
         }
-      });
-      setSelectedPaths(initialSelected);
+      }
+      cachedSelectedPaths = initialSafe;
+      setSelectedPaths(new Set(initialSafe));
     } catch (e: any) {
-      setError(typeof e === 'string' ? e : e.message || '扫描失败');
+      console.error('扫描失败:', e);
+      const errMsg = typeof e === 'string' ? e : e?.message || JSON.stringify(e);
+      setError(errMsg);
+      if (errMsg.includes('5') || errMsg.includes('Access is denied') || errMsg.includes('权限不足')) {
+        onAdminAlertRef.current?.();
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // Only scan on initial mount if cache is empty
   useEffect(() => {
-    runScan();
+    if (!cachedScanResult) {
+      runScan(true);
+    }
   }, [runScan]);
 
   // Filtered items
   const filteredItems = useMemo(() => {
     if (!scanResult) return [];
-    const term = searchTerm.toLowerCase().trim();
     return scanResult.items.filter((item) => {
       if (filterRec === 'safe' && item.recommendation !== 'SafeToQuarantine') return false;
       if (filterRec === 'caution' && item.recommendation !== 'Caution') return false;
-      if (!term) return true;
 
+      if (!searchTerm.trim()) return true;
+      const lower = searchTerm.toLowerCase();
       return (
-        item.name.toLowerCase().includes(term) ||
-        (item.product_name && item.product_name.toLowerCase().includes(term)) ||
-        (item.author && item.author.toLowerCase().includes(term)) ||
-        (item.package_code && item.package_code.toLowerCase().includes(term))
+        item.name.toLowerCase().includes(lower) ||
+        (item.product_name && item.product_name.toLowerCase().includes(lower)) ||
+        (item.package_code && item.package_code.toLowerCase().includes(lower)) ||
+        (item.author && item.author.toLowerCase().includes(lower))
       );
     });
-  }, [scanResult, searchTerm, filterRec]);
+  }, [scanResult, filterRec, searchTerm]);
 
-  // Selected size
+  // Total bytes of selected files
   const selectedSize = useMemo(() => {
     if (!scanResult) return 0;
-    let sum = 0;
-    for (const item of scanResult.items) {
-      if (selectedPaths.has(item.path)) {
-        sum += item.size;
+    let size = 0;
+    for (const it of scanResult.items) {
+      if (selectedPaths.has(it.path)) {
+        size += it.size;
       }
     }
-    return sum;
+    return size;
   }, [scanResult, selectedPaths]);
 
-  const toggleSelect = useCallback((path: string) => {
+  // Selection toggle handlers
+  const toggleSelectPath = (path: string) => {
     setSelectedPaths((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      cachedSelectedPaths = next;
       return next;
     });
-  }, []);
+  };
 
-  const selectAllFiltered = useCallback(() => {
+  const selectAllFiltered = () => {
     setSelectedPaths((prev) => {
       const next = new Set(prev);
-      filteredItems.forEach((it) => next.add(it.path));
+      for (const it of filteredItems) {
+        next.add(it.path);
+      }
+      cachedSelectedPaths = next;
       return next;
     });
-  }, [filteredItems]);
+  };
 
-  const deselectAllFiltered = useCallback(() => {
+  const deselectAllFiltered = () => {
     setSelectedPaths((prev) => {
       const next = new Set(prev);
-      filteredItems.forEach((it) => next.delete(it.path));
+      for (const it of filteredItems) {
+        next.delete(it.path);
+      }
+      cachedSelectedPaths = next;
       return next;
     });
-  }, [filteredItems]);
+  };
 
-  const handleOpenExplorer = useCallback(async (filePath: string) => {
+  // Open file in Explorer
+  const handleOpenExplorer = async (filePath: string) => {
     try {
-      await invoke('open_explorer', { path: filePath, select: true });
+      const dir = filePath.includes('\\') ? filePath.slice(0, filePath.lastIndexOf('\\')) : filePath;
+      await invoke('open_explorer', { path: dir });
     } catch (e) {
-      console.error('打开文件位置失败:', e);
+      console.error('打开资源管理器失败:', e);
     }
-  }, []);
+  };
 
-  const executeAction = async (action: CleanAction) => {
-    if (selectedPaths.size === 0) return;
+  // Execute clean action
+  const handleConfirmAction = async () => {
+    if (!actionType || selectedPaths.size === 0) return;
+
     setExecuting(true);
+    setError(null);
+
+    let action: CleanAction;
+    if (actionType === 'quarantine') {
+      action = { type: 'Quarantine', target_dir: quarantineDir };
+    } else if (actionType === 'rename') {
+      action = { type: 'Rename', prefix: renamePrefix };
+    } else {
+      action = { type: 'Delete', permanent: false };
+    }
+
     try {
       const res = await invoke<CleanExecutionResult>('cleaner_execute', {
         pluginId: 'windows_installer',
@@ -140,28 +197,40 @@ export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = () =>
       });
       setExecResult(res);
       setActionType(null);
-      // Refresh scan
-      runScan();
+      // Invalidate cache and force fresh scan
+      cachedScanResult = null;
+      cachedSelectedPaths = null;
+      await runScan(true);
     } catch (e: any) {
-      alert(`执行失败: ${typeof e === 'string' ? e : e.message}`);
+      console.error('执行处置失败:', e);
+      const msg = typeof e === 'string' ? e : e?.message || JSON.stringify(e);
+      setError(msg);
+      if (msg.includes('5') || msg.includes('Access is denied') || msg.includes('权限不足')) {
+        onAdminAlertRef.current?.();
+      }
     } finally {
       setExecuting(false);
     }
   };
 
+  const isAllFilteredSelected =
+    filteredItems.length > 0 && filteredItems.every((it) => selectedPaths.has(it.path));
+
   return (
     <div className="installer-cleaner-panel">
-      {/* ── Summary Stats Cards ──────────────────────────────────────────────── */}
-      <div className="cleaner-stats-grid">
+      {/* ── 1. Top Summary Metric Cards ─────────────────────────────────────── */}
+      <div className="cleaner-stats-row">
         <div className="cleaner-stat-card">
-          <div className="stat-icon-wrapper active-color">
-            <ShieldCheck size={22} />
+          <div className="cleaner-stat-icon-box success">
+            <ShieldCheck size={20} />
           </div>
-          <div className="stat-info">
-            <span className="stat-label">活跃安装包 (受保护保留)</span>
-            <div className="stat-val-group">
-              <span className="stat-value">{scanResult ? scanResult.active_count : '--'}</span>
-              <span className="stat-sub">
+          <div className="cleaner-stat-content">
+            <span className="cleaner-stat-label">活跃安装包 (受保护保留)</span>
+            <div className="cleaner-stat-val-group">
+              <span className="cleaner-stat-value success">
+                {scanResult ? scanResult.active_count : '--'}
+              </span>
+              <span className="cleaner-stat-sub">
                 {scanResult ? formatBytes(scanResult.active_bytes) : ''}
               </span>
             </div>
@@ -169,16 +238,16 @@ export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = () =>
         </div>
 
         <div className="cleaner-stat-card">
-          <div className="stat-icon-wrapper warning-color">
-            <AlertTriangle size={22} />
+          <div className="cleaner-stat-icon-box warning">
+            <AlertTriangle size={20} />
           </div>
-          <div className="stat-info">
-            <span className="stat-label">孤立冗余包 (可清理)</span>
-            <div className="stat-val-group">
-              <span className="stat-value warning-text">
+          <div className="cleaner-stat-content">
+            <span className="cleaner-stat-label">孤立冗余包 (可清理)</span>
+            <div className="cleaner-stat-val-group">
+              <span className="cleaner-stat-value warning">
                 {scanResult ? scanResult.items.length : '--'}
               </span>
-              <span className="stat-sub warning-text">
+              <span className="cleaner-stat-sub warning">
                 {scanResult ? formatBytes(scanResult.total_bytes) : ''}
               </span>
             </div>
@@ -186,14 +255,14 @@ export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = () =>
         </div>
 
         <div className="cleaner-stat-card">
-          <div className="stat-icon-wrapper select-color">
-            <CheckSquare size={22} />
+          <div className="cleaner-stat-icon-box primary">
+            <Archive size={20} />
           </div>
-          <div className="stat-info">
-            <span className="stat-label">已选择待清理项</span>
-            <div className="stat-val-group">
-              <span className="stat-value highlight-text">{selectedPaths.size}</span>
-              <span className="stat-sub highlight-text">
+          <div className="cleaner-stat-content">
+            <span className="cleaner-stat-label">已选择待清理项</span>
+            <div className="cleaner-stat-val-group">
+              <span className="cleaner-stat-value primary">{selectedPaths.size}</span>
+              <span className="cleaner-stat-sub primary">
                 {selectedPaths.size > 0 ? formatBytes(selectedSize) : '0 B'}
               </span>
             </div>
@@ -201,35 +270,35 @@ export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = () =>
         </div>
       </div>
 
-      {/* ── Toolbar & Action Bar ────────────────────────────────────────────── */}
+      {/* ── 2. Toolbar & Controls ───────────────────────────────────────────── */}
       <div className="cleaner-toolbar">
         <div className="cleaner-toolbar-left">
-          <div className="search-box">
-            <Search size={15} className="search-icon" />
+          <div className="cleaner-search-box">
+            <Search size={14} className="cleaner-search-icon" />
             <input
               type="text"
-              placeholder="搜索产品名称、发行商、GUID 或文件名..."
+              placeholder="搜索产品名称、GUID、发行商或文件名…"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="cleaner-search-input"
+              className="dup-text-input cleaner-search-input"
             />
           </div>
 
-          <div className="filter-pills">
+          <div className="cleaner-filter-pills">
             <button
-              className={`filter-pill ${filterRec === 'all' ? 'active' : ''}`}
+              className={`cleaner-filter-pill ${filterRec === 'all' ? 'active' : ''}`}
               onClick={() => setFilterRec('all')}
             >
               全部 ({scanResult ? scanResult.items.length : 0})
             </button>
             <button
-              className={`filter-pill ${filterRec === 'safe' ? 'active' : ''}`}
+              className={`cleaner-filter-pill ${filterRec === 'safe' ? 'active' : ''}`}
               onClick={() => setFilterRec('safe')}
             >
               安全隔离项 ({scanResult ? scanResult.items.filter((i) => i.recommendation === 'SafeToQuarantine').length : 0})
             </button>
             <button
-              className={`filter-pill ${filterRec === 'caution' ? 'active' : ''}`}
+              className={`cleaner-filter-pill ${filterRec === 'caution' ? 'active' : ''}`}
               onClick={() => setFilterRec('caution')}
             >
               需谨慎 ({scanResult ? scanResult.items.filter((i) => i.recommendation === 'Caution').length : 0})
@@ -238,207 +307,172 @@ export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = () =>
         </div>
 
         <div className="cleaner-toolbar-right">
-          <button
-            className="action-btn text-btn"
-            onClick={selectAllFiltered}
-            title="全选当前过滤出的项目"
-          >
-            全选
-          </button>
-          <button
-            className="action-btn text-btn"
-            onClick={deselectAllFiltered}
-            title="取消全选"
-          >
-            取消
-          </button>
+          <button className="dup-link-btn" onClick={selectAllFiltered}>全选</button>
+          <button className="dup-link-btn" onClick={deselectAllFiltered}>取消</button>
 
           <button
-            className="action-btn refresh-btn"
-            onClick={runScan}
+            className="btn btn-secondary cleaner-btn"
+            onClick={() => runScan(true)}
             disabled={loading}
             title="重新扫描"
           >
-            <RefreshCw size={15} className={loading ? 'spin' : ''} />
-            <span>重新扫描</span>
+            <RefreshCw size={13} className={loading ? 'spin' : ''} />
+            <span>刷新</span>
           </button>
 
-          <div className="action-divider" />
+          <div className="cleaner-divider" />
 
           <button
-            className="clean-op-btn quarantine-btn"
+            className="btn btn-primary cleaner-btn"
             onClick={() => setActionType('quarantine')}
             disabled={selectedPaths.size === 0 || loading || executing}
-            title="将所选项移动到指定的隔离备份目录，支持随时一键还原（强烈推荐）"
+            title="将所选项移动到安全隔离目录（推荐，支持随时一键还原）"
           >
-            <Archive size={15} />
+            <Archive size={14} />
             <span>隔离备份 ({selectedPaths.size})</span>
           </button>
 
           <button
-            className="clean-op-btn rename-btn"
+            className="btn btn-secondary cleaner-btn"
             onClick={() => setActionType('rename')}
             disabled={selectedPaths.size === 0 || loading || executing}
-            title="重命名添加 !UnUsed - 前缀，便于观察系统运行情况"
+            title="添加 !UnUsed - 前缀观察系统运行状态"
           >
-            <Tag size={15} />
-            <span>标记重命名</span>
+            <Tag size={14} />
+            <span>重命名</span>
           </button>
 
           <button
-            className="clean-op-btn delete-btn"
+            className="btn btn-danger cleaner-btn"
             onClick={() => setActionType('delete')}
             disabled={selectedPaths.size === 0 || loading || executing}
-            title="彻底从磁盘永久清除所选安装包"
+            title="永久删除所选文件"
           >
-            <Trash2 size={15} />
+            <Trash2 size={14} />
             <span>永久清理</span>
           </button>
         </div>
       </div>
 
-      {/* ── Feedback Notification ────────────────────────────────────────────── */}
+      {/* ── 3. Notification Banners ─────────────────────────────────────────── */}
       {execResult && (
-        <div className="cleaner-banner success-banner">
-          <CheckCircle2 size={18} />
+        <div className="cleaner-banner success">
+          <CheckCircle2 size={16} />
           <span>
-            清理完成：成功处理 <strong>{execResult.succeeded}</strong> 个文件，释放空间{' '}
-            <strong>{formatBytes(execResult.freed_bytes)}</strong>
+            清理完成：成功处理 <b>{execResult.succeeded}</b> 个文件，释放空间{' '}
+            <b>{formatBytes(execResult.freed_bytes)}</b>
             {execResult.failed > 0 && `（${execResult.failed} 个文件处理失败）`}
           </span>
-          <button className="banner-close" onClick={() => setExecResult(null)}>
-            ×
+          <button className="cleaner-banner-close" onClick={() => setExecResult(null)}>
+            <X size={14} />
           </button>
         </div>
       )}
 
       {error && (
-        <div className="cleaner-banner error-banner">
-          <XCircle size={18} />
+        <div className="cleaner-banner error">
+          <XCircle size={16} />
           <span>{error}</span>
-          <button className="banner-close" onClick={() => setError(null)}>
-            ×
+          <button className="cleaner-banner-close" onClick={() => setError(null)}>
+            <X size={14} />
           </button>
         </div>
       )}
 
-      {/* ── Item Table / List ─────────────────────────────────────────────────── */}
-      <div className="cleaner-table-container">
+      {/* ── 4. Item Table Section ───────────────────────────────────────────── */}
+      <div className="cleaner-table-card">
         {loading ? (
-          <div className="cleaner-loading-state">
-            <RefreshCw size={32} className="spin" />
-            <p>正在执行 Windows 注册表与 MSI API 双重白名单分析...</p>
-            <span className="loading-sub">
-              正在遍历 C:\Windows\Installer 并解析安装包 Summary 信息，请稍候
-            </span>
+          <div className="cleaner-loading-area">
+            <RefreshCw size={28} className="spin" />
+            <p>正在分析 Windows 注册表与 Win32 MSI 白名单…</p>
+            <span>正在校验 C:\Windows\Installer 并解析安装包自省信息</span>
           </div>
         ) : filteredItems.length === 0 ? (
-          <div className="cleaner-empty-state">
-            <CheckCircle2 size={48} className="empty-icon-success" />
-            <h3>太棒了，未发现任何冗余孤立安装包！</h3>
-            <p>系统中的 Windows Installer 缓存完全健康整洁，无需清理。</p>
+          <div className="cleaner-empty-area">
+            <CheckCircle2 size={44} className="cleaner-empty-icon" />
+            <h3>未发现孤立冗余安装包</h3>
+            <p>当前 Windows Installer 缓存干净整洁，所有物理包均对应活跃已安装产品。</p>
           </div>
         ) : (
-          <div className="cleaner-table-wrapper">
+          <div className="cleaner-table-scroll">
             <table className="cleaner-table">
               <thead>
                 <tr>
-                  <th style={{ width: 44 }}>
-                    <button
-                      className="header-chk-btn"
-                      onClick={() => {
-                        const allSelected = filteredItems.every((it) => selectedPaths.has(it.path));
-                        if (allSelected) deselectAllFiltered();
+                  <th style={{ width: 40, textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      className="dup-checkbox"
+                      checked={isAllFilteredSelected}
+                      onChange={() => {
+                        if (isAllFilteredSelected) deselectAllFiltered();
                         else selectAllFiltered();
                       }}
-                    >
-                      {filteredItems.every((it) => selectedPaths.has(it.path)) ? (
-                        <CheckSquare size={16} />
-                      ) : (
-                        <Square size={16} />
-                      )}
-                    </button>
+                    />
                   </th>
                   <th style={{ width: 140 }}>文件名</th>
-                  <th>软件 / 产品信息</th>
-                  <th style={{ width: 160 }}>发行商 / 厂商</th>
-                  <th style={{ width: 100 }}>大小</th>
-                  <th style={{ width: 110 }}>修改日期</th>
-                  <th style={{ width: 110 }}>安全建议</th>
-                  <th style={{ width: 70 }}>操作</th>
+                  <th>关联软件产品 / PackageCode</th>
+                  <th style={{ width: 160 }}>发行商</th>
+                  <th style={{ width: 100, textAlign: 'right' }}>文件大小</th>
+                  <th style={{ width: 120 }}>修改时间</th>
+                  <th style={{ width: 100, textAlign: 'center' }}>处置建议</th>
+                  <th style={{ width: 44, textAlign: 'center' }}>操作</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredItems.map((item) => {
-                  const isChecked = selectedPaths.has(item.path);
-                  const isCaution = item.recommendation === 'Caution';
-                  const dateStr = item.last_modified
-                    ? new Date(item.last_modified * 1000).toLocaleDateString()
-                    : '--';
-
+                  const isSelected = selectedPaths.has(item.path);
                   return (
                     <tr
                       key={item.path}
-                      className={`cleaner-row ${isChecked ? 'selected' : ''}`}
-                      onClick={() => toggleSelect(item.path)}
+                      className={`cleaner-row ${isSelected ? 'selected' : ''}`}
+                      onClick={() => toggleSelectPath(item.path)}
                     >
-                      <td onClick={(e) => e.stopPropagation()}>
-                        <button
-                          className="row-chk-btn"
-                          onClick={() => toggleSelect(item.path)}
-                        >
-                          {isChecked ? <CheckSquare size={16} /> : <Square size={16} />}
-                        </button>
+                      <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          className="dup-checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectPath(item.path)}
+                        />
                       </td>
-                      <td className="col-filename">
-                        <span className="file-name" title={item.path}>
-                          {item.name}
-                        </span>
+                      <td className="cleaner-col-filename" title={item.path}>
+                        {item.name}
                       </td>
-                      <td className="col-product">
-                        <div className="product-title-group">
-                          <span
-                            className="product-title"
-                            title={item.comments || item.product_name || item.name}
-                          >
-                            {item.product_name || '[无内置标题的补丁/组件]'}
+                      <td>
+                        <div className="cleaner-prod-info">
+                          <span className="cleaner-prod-name">
+                            {item.product_name || '未知 MSI 软件包'}
                           </span>
                           {item.package_code && (
-                            <span className="package-code" title={`PackageCode: ${item.package_code}`}>
+                            <span className="cleaner-package-guid" title={item.package_code}>
                               {item.package_code}
                             </span>
                           )}
                         </div>
                       </td>
-                      <td className="col-author">
-                        <span className="author-text" title={item.author || ''}>
-                          {item.author || '--'}
-                        </span>
+                      <td className="cleaner-col-author">
+                        {item.author || '--'}
                       </td>
-                      <td className="col-size">
-                        <span className="size-text">{formatBytes(item.size)}</span>
+                      <td className="cleaner-col-size">
+                        {formatBytes(item.size)}
                       </td>
-                      <td className="col-date">
-                        <span className="date-text">{dateStr}</span>
+                      <td className="cleaner-col-date">
+                        {item.last_modified ? new Date(item.last_modified * 1000).toISOString().slice(0, 10) : '--'}
                       </td>
-                      <td className="col-badge">
-                        {isCaution ? (
-                          <span className="badge badge-caution" title="检测到可能与现有卸载项同名，建议优先隔离而非直接删除">
-                            需谨慎
-                          </span>
+                      <td style={{ textAlign: 'center' }}>
+                        {item.recommendation === 'SafeToQuarantine' ? (
+                          <span className="dup-badge badge-verified">安全隔离</span>
                         ) : (
-                          <span className="badge badge-safe" title="已被新版本替换或卸载遗留，可安全隔离备份">
-                            建议隔离
-                          </span>
+                          <span className="dup-badge badge-caution">需谨慎</span>
                         )}
                       </td>
-                      <td className="col-actions" onClick={(e) => e.stopPropagation()}>
+                      <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                         <button
-                          className="icon-action-btn"
-                          title="在文件资源管理器中定位"
+                          className="icon-btn"
                           onClick={() => handleOpenExplorer(item.path)}
+                          title="在文件资源管理器中定位"
                         >
-                          <FolderOpen size={15} />
+                          <FolderOpen size={14} />
                         </button>
                       </td>
                     </tr>
@@ -450,139 +484,139 @@ export const InstallerCleanerPanel: React.FC<InstallerCleanerPanelProps> = () =>
         )}
       </div>
 
-      {/* ── Quarantine Confirmation Modal ────────────────────────────────────── */}
-      {actionType === 'quarantine' && (
-        <div className="cleaner-modal-backdrop" onClick={() => setActionType(null)}>
-          <div className="cleaner-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <Archive size={20} className="modal-icon quarantine-color" />
-              <h3>隔离备份孤立安装包</h3>
-            </div>
-            <div className="modal-body">
-              <p>
-                即将把选中的 <strong>{selectedPaths.size}</strong> 个安装包（总计{' '}
-                <strong>{formatBytes(selectedSize)}</strong>）移动到备份目录。
-              </p>
-              <div className="modal-tip-box">
-                <Info size={16} />
-                <span>
-                  <strong>安全提示：</strong>
-                  移动后可立即释放 C 盘空间。如日后发现某软件修复需要对应文件，可随时从隔离目录移回原位。
-                </span>
-              </div>
-              <div className="input-group">
-                <label>目标隔离目录：</label>
-                <input
-                  type="text"
-                  value={quarantineDir}
-                  onChange={(e) => setQuarantineDir(e.target.value)}
-                  className="modal-text-input"
-                />
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="modal-btn cancel-btn"
-                onClick={() => setActionType(null)}
-                disabled={executing}
-              >
-                取消
-              </button>
-              <button
-                className="modal-btn confirm-btn quarantine-confirm"
-                onClick={() =>
-                  executeAction({ type: 'Quarantine', target_dir: quarantineDir })
-                }
-                disabled={executing || !quarantineDir.trim()}
-              >
-                {executing ? '正在隔离...' : '开始隔离'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ── 5. Action Confirmation Modals (Frosted Glass Light Dialogs) ──────── */}
+      {actionType && (
+        <div className="cleaner-modal-overlay" onClick={() => setActionType(null)}>
+          <div className="cleaner-modal-card" onClick={(e) => e.stopPropagation()}>
+            <button className="cleaner-modal-close" onClick={() => setActionType(null)}>
+              <X size={16} />
+            </button>
 
-      {/* ── Rename Confirmation Modal ────────────────────────────────────────── */}
-      {actionType === 'rename' && (
-        <div className="cleaner-modal-backdrop" onClick={() => setActionType(null)}>
-          <div className="cleaner-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <Tag size={20} className="modal-icon rename-color" />
-              <h3>标记重命名孤立文件</h3>
-            </div>
-            <div className="modal-body">
-              <p>
-                即将为选中的 <strong>{selectedPaths.size}</strong> 个文件添加前缀{' '}
-                <code>!UnUsed - </code>。
-              </p>
-              <div className="modal-tip-box">
-                <Info size={16} />
-                <span>
-                  <strong>说明：</strong>
-                  文件依然保留在原目录中，重命名后若某软件试图调用会报错，便于观察是否会影响特定冷门软件。
-                </span>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="modal-btn cancel-btn"
-                onClick={() => setActionType(null)}
-                disabled={executing}
-              >
-                取消
-              </button>
-              <button
-                className="modal-btn confirm-btn rename-confirm"
-                onClick={() => executeAction({ type: 'Rename', prefix: '!UnUsed - ' })}
-                disabled={executing}
-              >
-                {executing ? '正在重命名...' : '确认重命名'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+            <div className="cleaner-modal-content">
+              {actionType === 'quarantine' && (
+                <>
+                  <div className="cleaner-modal-header">
+                    <div className="cleaner-modal-icon-wrapper primary">
+                      <Archive size={24} />
+                    </div>
+                    <div>
+                      <h3>隔离备份安装包</h3>
+                      <p>将所选的 <b>{selectedPaths.size}</b> 个文件安全移至备份目录，释放 <b>{formatBytes(selectedSize)}</b> 空间</p>
+                    </div>
+                  </div>
 
-      {/* ── Permanent Delete Warning Modal ────────────────────────────────────── */}
-      {actionType === 'delete' && (
-        <div className="cleaner-modal-backdrop" onClick={() => setActionType(null)}>
-          <div className="cleaner-modal modal-danger" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <AlertTriangle size={20} className="modal-icon danger-color" />
-              <h3>永久清理孤立安装包确认</h3>
-            </div>
-            <div className="modal-body">
-              <p>
-                即将永久删除选中的 <strong>{selectedPaths.size}</strong> 个安装包文件，预计释放空间{' '}
-                <strong>{formatBytes(selectedSize)}</strong>。
-              </p>
-              <div className="modal-tip-box danger-box">
-                <AlertTriangle size={18} />
-                <span>
-                  <strong>高危操作警告：</strong>
-                  删除后文件将无法通过回收站找回！建议优先选用【隔离备份】功能，确认数周内无任何异常后再做彻底清理。
-                </span>
-              </div>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="modal-btn cancel-btn"
-                onClick={() => setActionType(null)}
-                disabled={executing}
-              >
-                取消
-              </button>
-              <button
-                className="modal-btn confirm-btn danger-confirm"
-                onClick={() => executeAction({ type: 'Delete', permanent: true })}
-                disabled={executing}
-              >
-                {executing ? '正在删除...' : '确定彻底删除'}
-              </button>
+                  <div className="cleaner-modal-body">
+                    <div className="cleaner-modal-tip">
+                      <ShieldCheck size={16} />
+                      <span>文件并未真正删除，如遇软件修补或卸载需要，可随时将备份包移回原目录还原。</span>
+                    </div>
+
+                    <div className="cleaner-modal-field">
+                      <label>隔离存放目标目录：</label>
+                      <input
+                        type="text"
+                        className="dup-text-input cleaner-modal-input"
+                        value={quarantineDir}
+                        onChange={(e) => setQuarantineDir(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="cleaner-modal-footer">
+                    <button className="btn btn-secondary" onClick={() => setActionType(null)}>
+                      取消
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleConfirmAction}
+                      disabled={executing || !quarantineDir.trim()}
+                    >
+                      {executing ? '处理中…' : '开始隔离'}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {actionType === 'rename' && (
+                <>
+                  <div className="cleaner-modal-header">
+                    <div className="cleaner-modal-icon-wrapper primary">
+                      <Tag size={24} />
+                    </div>
+                    <div>
+                      <h3>标记重命名安装包</h3>
+                      <p>为所选 <b>{selectedPaths.size}</b> 个文件追加前缀，验证系统与软件使用情况</p>
+                    </div>
+                  </div>
+
+                  <div className="cleaner-modal-body">
+                    <div className="cleaner-modal-tip">
+                      <span>重命名后 Windows 将无法直接找到该安装包，可观察数天。若无异常再执行清理。</span>
+                    </div>
+
+                    <div className="cleaner-modal-field">
+                      <label>前缀名称：</label>
+                      <input
+                        type="text"
+                        className="dup-text-input cleaner-modal-input"
+                        value={renamePrefix}
+                        onChange={(e) => setRenamePrefix(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="cleaner-modal-footer">
+                    <button className="btn btn-secondary" onClick={() => setActionType(null)}>
+                      取消
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleConfirmAction}
+                      disabled={executing || !renamePrefix.trim()}
+                    >
+                      {executing ? '处理中…' : '开始重命名'}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {actionType === 'delete' && (
+                <>
+                  <div className="cleaner-modal-header">
+                    <div className="cleaner-modal-icon-wrapper danger">
+                      <Trash2 size={24} />
+                    </div>
+                    <div>
+                      <h3>永久清理确认</h3>
+                      <p>您即将从磁盘彻底删除 <b>{selectedPaths.size}</b> 个安装包（共 <b>{formatBytes(selectedSize)}</b>）</p>
+                    </div>
+                  </div>
+
+                  <div className="cleaner-modal-body">
+                    <div className="cleaner-modal-tip danger">
+                      <AlertTriangle size={16} />
+                      <span>此操作直接删除磁盘文件，无法撤销！建议优先使用“隔离备份”。</span>
+                    </div>
+                  </div>
+
+                  <div className="cleaner-modal-footer">
+                    <button className="btn btn-secondary" onClick={() => setActionType(null)}>
+                      取消
+                    </button>
+                    <button
+                      className="btn btn-danger"
+                      onClick={handleConfirmAction}
+                      disabled={executing}
+                    >
+                      {executing ? '清理中…' : '确认彻底删除'}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
       )}
     </div>
   );
-};
+});

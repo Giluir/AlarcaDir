@@ -32,9 +32,16 @@ pub struct CleanerScanResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum CleanAction {
-    Quarantine { target_dir: String },
-    Rename { prefix: String },
-    Delete { permanent: bool },
+    Quarantine {
+        #[serde(alias = "targetDir", alias = "destination")]
+        target_dir: String,
+    },
+    Rename {
+        prefix: String,
+    },
+    Delete {
+        permanent: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
