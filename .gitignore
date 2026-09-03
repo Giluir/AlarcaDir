@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Temporary markdown files for tracking work
+tmp*.md
+ref/

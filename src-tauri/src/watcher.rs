@@ -32,8 +32,8 @@ impl WatcherState {
         self.stop();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut debouncer = new_debouncer(Duration::from_millis(1000), tx)
-            .map_err(|e| e.to_string())?;
+        let mut debouncer =
+            new_debouncer(Duration::from_millis(1000), tx).map_err(|e| e.to_string())?;
 
         debouncer
             .watcher()

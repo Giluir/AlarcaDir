@@ -1,12 +1,12 @@
 // scanner/mod.rs
 // Unified scan entry point: tries NTFS MFT fast-path, falls back to direct NT API scan.
 
-pub mod types;
-pub mod ntfs;
 pub mod basic;
+pub mod ntfs;
+pub mod types;
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 pub use types::{CancelFlag, FlatNode, ProgressReporter, ScanCounters, ScanResult};
 

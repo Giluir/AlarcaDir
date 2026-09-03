@@ -1,15 +1,16 @@
+pub mod cleaner;
 pub mod scanner;
 pub mod watcher;
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
-use sha2::{Digest, Sha512};
 use serde_json::json;
+use sha2::{Digest, Sha512};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use scanner::{CancelFlag, ProgressReporter};
@@ -31,10 +32,14 @@ fn hash_reader(mut reader: impl Read, limit: u64) -> Option<Vec<u8>> {
     let mut total_read = 0u64;
     loop {
         let remaining = limit.saturating_sub(total_read);
-        if remaining == 0 { break; }
+        if remaining == 0 {
+            break;
+        }
         let want = remaining.min(buf.len() as u64) as usize;
         let n = reader.read(&mut buf[..want]).ok()?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buf[..n]);
         total_read += n as u64;
     }
@@ -47,7 +52,10 @@ fn bytes_to_hex(b: &[u8]) -> String {
 }
 
 fn emit_progress(app: &AppHandle, phase: &str, done: usize, total: usize) {
-    let _ = app.emit("dupe-progress", json!({ "phase": phase, "done": done, "total": total }));
+    let _ = app.emit(
+        "dupe-progress",
+        json!({ "phase": phase, "done": done, "total": total }),
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -110,7 +118,8 @@ async fn start_find_duplicates(
                     by_hash.entry(hash).or_default().push(path);
                 }
 
-                by_hash.into_iter()
+                by_hash
+                    .into_iter()
                     .filter(|(_, v)| v.len() >= 2)
                     .map(|(hash, paths)| Phase1Group {
                         hash: bytes_to_hex(&hash),
@@ -154,7 +163,8 @@ async fn verify_duplicates(
             .flat_map(|group| {
                 let size = group.bytes;
                 let orig_hash = group.hash.clone();
-                let full: Vec<(Vec<u8>, String)> = group.paths
+                let full: Vec<(Vec<u8>, String)> = group
+                    .paths
                     .into_par_iter()
                     .filter_map(|p| {
                         let h = hash_file_limited(&p, u64::MAX)?;
@@ -171,7 +181,8 @@ async fn verify_duplicates(
                     by_hash.entry(hash).or_default().push(path);
                 }
 
-                by_hash.into_iter()
+                by_hash
+                    .into_iter()
                     .filter(|(_, v)| v.len() >= 2)
                     .map(|(hash, paths)| {
                         let wasted = size * (paths.len() as u64 - 1);
@@ -219,11 +230,14 @@ impl ProgressReporter for TauriReporter {
     fn report(&self, files: u64, bytes: u64, path: &str) {
         let mut last = self.last_report.lock().unwrap();
         if last.elapsed() >= Duration::from_millis(250) {
-            let _ = self.app.emit("scan-progress", serde_json::json!({
-                "files": files,
-                "bytes": bytes,
-                "path": path,
-            }));
+            let _ = self.app.emit(
+                "scan-progress",
+                serde_json::json!({
+                    "files": files,
+                    "bytes": bytes,
+                    "path": path,
+                }),
+            );
             *last = Instant::now();
         }
     }
@@ -257,7 +271,10 @@ async fn start_scan(
     let cancel = scanner::new_cancel_flag();
     *state.current_cancel.lock().unwrap() = Some(cancel.clone());
 
-    let reporter = TauriReporter { app: app.clone(), last_report: Mutex::new(Instant::now()) };
+    let reporter = TauriReporter {
+        app: app.clone(),
+        last_report: Mutex::new(Instant::now()),
+    };
     let path_clone = path.clone();
     let cancel_clone = cancel.clone();
 
@@ -276,7 +293,7 @@ async fn start_scan(
 
     // Encode as compact binary
     let bytes = scanner::types::encode_nodes(&result.nodes);
-    
+
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -310,7 +327,9 @@ fn check_admin() -> bool {
     #[cfg(target_os = "windows")]
     {
         use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+        use windows::Win32::Security::{
+            GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+        };
         use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
         unsafe {
@@ -335,6 +354,44 @@ fn check_admin() -> bool {
     false
 }
 
+#[tauri::command]
+fn get_cleaner_plugins(
+    cleaner_state: State<'_, cleaner::CleanerState>,
+) -> Result<Vec<cleaner::plugin::CleanerPluginInfo>, String> {
+    let reg = cleaner_state.lock().map_err(|e| e.to_string())?;
+    Ok(reg.list_plugins())
+}
+
+#[tauri::command]
+async fn cleaner_scan(
+    plugin_id: String,
+    app: AppHandle,
+) -> Result<cleaner::plugin::CleanerScanResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cleaner_state = app.state::<cleaner::CleanerState>();
+        let reg = cleaner_state.lock().map_err(|e| e.to_string())?;
+        reg.scan(&plugin_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn cleaner_execute(
+    plugin_id: String,
+    action: cleaner::plugin::CleanAction,
+    items: Vec<String>,
+    app: AppHandle,
+) -> Result<cleaner::plugin::CleanExecutionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let cleaner_state = app.state::<cleaner::CleanerState>();
+        let reg = cleaner_state.lock().map_err(|e| e.to_string())?;
+        reg.execute(&plugin_id, action, items)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -346,6 +403,7 @@ pub fn run() {
                 current_cancel: Mutex::new(None),
                 watcher: Mutex::new(watcher::WatcherState::new()),
             });
+            app.manage(cleaner::CleanerState::new(cleaner::CleanerRegistry::new()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -356,6 +414,9 @@ pub fn run() {
             start_find_duplicates,
             verify_duplicates,
             check_admin,
+            get_cleaner_plugins,
+            cleaner_scan,
+            cleaner_execute,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application")

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { HardDrive, Play, Square, Folder, PanelRight } from 'lucide-react';
+import { HardDrive, Play, Square, Folder, PanelRight, Sparkles } from 'lucide-react';
 import './App.css';
 
 import { DirectoryNode, ProgressPayload, FileChangeEvent } from './types';
@@ -11,6 +11,7 @@ import { TreemapChart } from './components/TreemapChart';
 import { TopFilesPanel } from './components/TopFilesPanel';
 import { DuplicatesPage, DupeState, INITIAL_DUPE_STATE } from './components/DuplicatesPage';
 import { AdminAlert } from './components/AdminAlert';
+import { CleanerPage } from './components/cleaner/CleanerPage';
 
 
 function App() {
@@ -28,7 +29,7 @@ function App() {
   const [sidebarTab, setSidebarTab] = useState<'filetypes' | 'topfiles'>('filetypes');
 
   // Main view tab
-  const [activeTab, setActiveTab] = useState<'treemap' | 'duplicates'>('treemap');
+  const [activeTab, setActiveTab] = useState<'treemap' | 'duplicates' | 'cleaner'>('treemap');
 
   // Bottom panel data
   const [topFiles, setTopFiles] = useState<TopFileEntry[]>([]);
@@ -192,6 +193,14 @@ function App() {
           <h1>Alarca<span className="title-highlight">Dir</span></h1>
         </div>
         <div className="controls-area">
+          <button
+            className={`btn btn-secondary nav-cleaner-btn ${activeTab === 'cleaner' ? 'active' : ''}`}
+            onClick={() => setActiveTab(activeTab === 'cleaner' ? 'treemap' : 'cleaner')}
+            title="打开空间清理工具箱"
+          >
+            <Sparkles size={16} />
+            <span>空间清理</span>
+          </button>
           <div className="drive-selector">
             <HardDrive size={18} />
             <select value={selectedDrive} onChange={(e) => setSelectedDrive(e.target.value)} disabled={scanning}>
@@ -208,161 +217,168 @@ function App() {
       </header>
 
       <main className="main-content">
-        {!scanning && !scanResult && (
-          <div className="empty-state">
-            <div className="glow-circle"></div>
-            <HardDrive size={64} className="empty-icon" />
-            <h2>Select a drive to scan</h2>
-            <p>Experience lightning fast directory visualization.</p>
-          </div>
-        )}
-
-        {scanning && progress && (
-          <div className="scanning-state">
-            <div className="spinner"></div>
-            <h3>Scanning {selectedDrive}</h3>
-            <div className="stats-row">
-              <div className="stat-box">
-                <span className="stat-label">Files</span>
-                <span className="stat-value">{progress.files.toLocaleString()}</span>
-              </div>
-              <div className="stat-box">
-                <span className="stat-label">Size</span>
-                <span className="stat-value">{formatBytes(progress.bytes)}</span>
-              </div>
+        {activeTab === 'cleaner' ? (
+          <CleanerPage />
+        ) : (<>
+          {!scanning && !scanResult && (
+            <div className="empty-state">
+              <div className="glow-circle"></div>
+              <HardDrive size={64} className="empty-icon" />
+              <h2>Select a drive to scan</h2>
+              <p>Experience lightning fast directory visualization.</p>
             </div>
-            <p className="current-path" title={progress.path}>{progress.path}</p>
-          </div>
-        )}
+          )}
 
-        {scanResult && !scanning && (
-          <div className="result-view">
-            {/* ── Tab bar ───────────────────────────────────────────────── */}
-            <div className="main-tab-bar">
-              <button
-                className={`main-tab ${activeTab === 'treemap' ? 'active' : ''}`}
-                onClick={() => setActiveTab('treemap')}
-              >文件分布</button>
-              <button
-                className={`main-tab ${activeTab === 'duplicates' ? 'active' : ''}`}
-                onClick={() => setActiveTab('duplicates')}
-              >重复文件</button>
-            </div>
-            {/* ── Treemap Tab ──────────────────────────────────────────── */}
-            {activeTab === 'treemap' && (<>
-              <div className="toolbar">
-                <div className="toolbar-controls">
-                  <div className="ctrl-group">
-                    <span className="ctrl-label">深度: {maxDepthLocal}</span>
-                    <input type="range" min="1" max="5" value={maxDepthLocal}
-                      onChange={(e) => {
-                        const v = parseInt(e.target.value);
-                        setMaxDepthLocal(v);
-                        clearTimeout(depthTimer.current);
-                        depthTimer.current = setTimeout(() => setMaxDepth(v), 150);
-                      }} className="ctrl-slider" />
-                  </div>
-                  <div className="ctrl-group">
-                    <span className="ctrl-label">过滤: {(filterThresholdLocal * 100).toFixed(2)}%</span>
-                    <input type="range" min="0" max="0.03" step="0.001" value={filterThresholdLocal}
-                      onChange={(e) => {
-                        const v = parseFloat(e.target.value);
-                        setFilterThresholdLocal(v);
-                        clearTimeout(filterTimer.current);
-                        filterTimer.current = setTimeout(() => setFilterThreshold(v), 150);
-                      }} className="ctrl-slider" />
-                  </div>
+          {scanning && progress && (
+            <div className="scanning-state">
+              <div className="spinner"></div>
+              <h3>Scanning {selectedDrive}</h3>
+              <div className="stats-row">
+                <div className="stat-box">
+                  <span className="stat-label">Files</span>
+                  <span className="stat-value">{progress.files.toLocaleString()}</span>
                 </div>
-                <div className="breadcrumbs">
-                  {breadcrumbPath.map((crumb, idx) => (
-                    <span key={idx} className="crumb-item">
-                      <button className="crumb-btn" onClick={() => handleBreadcrumbClick(idx)}>
-                        {idx === 0 && crumb.n.endsWith('\\') ? crumb.n.slice(0, -1) : crumb.n}
-                      </button>
-                      {idx < breadcrumbPath.length - 1 && <span className="crumb-separator">/</span>}
-                    </span>
-                  ))}
-                </div>
-                <div className="toolbar-right">
-                  <button
-                    className={`sidebar-toggle-btn ${sidebarOpen ? 'active' : ''}`}
-                    onClick={() => setSidebarOpen(v => !v)}
-                    title={sidebarOpen ? '收起文件类型分布' : '展开文件类型分布'}
-                  >
-                    <PanelRight size={16} />
-                    <span>详情</span>
-                  </button>
+                <div className="stat-box">
+                  <span className="stat-label">Size</span>
+                  <span className="stat-value">{formatBytes(progress.bytes)}</span>
                 </div>
               </div>
-              <div className="result-layout">
-                <div className="treemap-area">
-                  <TreemapChart
-                    dataRoot={currentRoot}
-                    basePath={currentPathString}
-                    maxDepth={maxDepth}
-                    filterThreshold={filterThreshold}
-                    updateRevision={updateRevision}
-                    onDrillDown={handleDrillDown}
-                    onDrillUp={handleDrillUp}
-                  />
-                </div>
-                {sidebarOpen && (
-                  <aside className="sidebar-panel">
-                    <div className="sidebar-tabs">
-                      <button
-                        className={`sidebar-tab ${sidebarTab === 'filetypes' ? 'active' : ''}`}
-                        onClick={() => setSidebarTab('filetypes')}
-                      >
-                        文件类型
-                      </button>
-                      <button
-                        className={`sidebar-tab ${sidebarTab === 'topfiles' ? 'active' : ''}`}
-                        onClick={() => setSidebarTab('topfiles')}
-                      >
-                        最大文件
-                      </button>
+              <p className="current-path" title={progress.path}>{progress.path}</p>
+            </div>
+          )}
+
+          {scanResult && !scanning && (
+            <div className="result-view">
+              {/* ── Tab bar ───────────────────────────────────────────────── */}
+              <div className="main-tab-bar">
+                <button
+                  className={`main-tab ${activeTab === 'treemap' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('treemap')}
+                >文件分布</button>
+                <button
+                  className={`main-tab ${activeTab === 'duplicates' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('duplicates')}
+                >重复文件</button>
+                <button
+                  className="main-tab"
+                  onClick={() => setActiveTab('cleaner')}
+                >空间清理</button>
+              </div>
+              {/* ── Treemap Tab ──────────────────────────────────────────── */}
+              {activeTab === 'treemap' && (<>
+                <div className="toolbar">
+                  <div className="toolbar-controls">
+                    <div className="ctrl-group">
+                      <span className="ctrl-label">深度: {maxDepthLocal}</span>
+                      <input type="range" min="1" max="5" value={maxDepthLocal}
+                        onChange={(e) => {
+                          const v = parseInt(e.target.value);
+                          setMaxDepthLocal(v);
+                          clearTimeout(depthTimer.current);
+                          depthTimer.current = setTimeout(() => setMaxDepth(v), 150);
+                        }} className="ctrl-slider" />
                     </div>
+                    <div className="ctrl-group">
+                      <span className="ctrl-label">过滤: {(filterThresholdLocal * 100).toFixed(2)}%</span>
+                      <input type="range" min="0" max="0.03" step="0.001" value={filterThresholdLocal}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          setFilterThresholdLocal(v);
+                          clearTimeout(filterTimer.current);
+                          filterTimer.current = setTimeout(() => setFilterThreshold(v), 150);
+                        }} className="ctrl-slider" />
+                    </div>
+                  </div>
+                  <div className="breadcrumbs">
+                    {breadcrumbPath.map((crumb, idx) => (
+                      <span key={idx} className="crumb-item">
+                        <button className="crumb-btn" onClick={() => handleBreadcrumbClick(idx)}>
+                          {idx === 0 && crumb.n.endsWith('\\') ? crumb.n.slice(0, -1) : crumb.n}
+                        </button>
+                        {idx < breadcrumbPath.length - 1 && <span className="crumb-separator">/</span>}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="toolbar-right">
+                    <button
+                      className={`sidebar-toggle-btn ${sidebarOpen ? 'active' : ''}`}
+                      onClick={() => setSidebarOpen(v => !v)}
+                      title={sidebarOpen ? '收起文件类型分布' : '展开文件类型分布'}
+                    >
+                      <PanelRight size={16} />
+                      <span>详情</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="result-layout">
+                  <div className="treemap-area">
+                    <TreemapChart
+                      dataRoot={currentRoot}
+                      basePath={currentPathString}
+                      maxDepth={maxDepth}
+                      filterThreshold={filterThreshold}
+                      updateRevision={updateRevision}
+                      onDrillDown={handleDrillDown}
+                      onDrillUp={handleDrillUp}
+                    />
+                  </div>
+                  {sidebarOpen && (
+                    <aside className="sidebar-panel">
+                      <div className="sidebar-tabs">
+                        <button
+                          className={`sidebar-tab ${sidebarTab === 'filetypes' ? 'active' : ''}`}
+                          onClick={() => setSidebarTab('filetypes')}
+                        >
+                          文件类型
+                        </button>
+                        <button
+                          className={`sidebar-tab ${sidebarTab === 'topfiles' ? 'active' : ''}`}
+                          onClick={() => setSidebarTab('topfiles')}
+                        >
+                          最大文件
+                        </button>
+                      </div>
 
-                    {sidebarTab === 'filetypes' && (
-                      <>
-                        <div className="sidebar-header">
-                          <span>文件类型分布</span>
-                          <span className="sidebar-sub">当前目录</span>
-                        </div>
-                        <div className="sidebar-chart">
-                          <FileTypeDistribution dataRoot={currentRoot} updateRevision={updateRevision} />
-                        </div>
-                      </>
-                    )}
+                      {sidebarTab === 'filetypes' && (
+                        <>
+                          <div className="sidebar-header">
+                            <span>文件类型分布</span>
+                            <span className="sidebar-sub">当前目录</span>
+                          </div>
+                          <div className="sidebar-chart">
+                            <FileTypeDistribution dataRoot={currentRoot} updateRevision={updateRevision} />
+                          </div>
+                        </>
+                      )}
 
-                    {sidebarTab === 'topfiles' && (
-                      <>
-                        <div className="sidebar-header">
-                          <span>最大文件</span>
-                          <span className="sidebar-sub">当前目录</span>
-                        </div>
-                        <div className="sidebar-chart">
-                          <TopFilesPanel files={topFiles} />
-                        </div>
-                      </>
-                    )}
-                  </aside>
-                )}
-              </div>
-            </>)}
+                      {sidebarTab === 'topfiles' && (
+                        <>
+                          <div className="sidebar-header">
+                            <span>最大文件</span>
+                            <span className="sidebar-sub">当前目录</span>
+                          </div>
+                          <div className="sidebar-chart">
+                            <TopFilesPanel files={topFiles} />
+                          </div>
+                        </>
+                      )}
+                    </aside>
+                  )}
+                </div>
+              </>)}
 
-            {/* ── Duplicates Tab ───────────────────────────────────────── */}
-            {activeTab === 'duplicates' && (
-              <DuplicatesPage
-                sizeGroups={sizeGroups}
-                hasScanned={hasScanned}
-                state={dupeState}
-                setState={setDupeState}
-              />
-            )}
-          </div>
-
-        )}
+              {/* ── Duplicates Tab ───────────────────────────────────────── */}
+              {activeTab === 'duplicates' && (
+                <DuplicatesPage
+                  sizeGroups={sizeGroups}
+                  hasScanned={hasScanned}
+                  state={dupeState}
+                  setState={setDupeState}
+                />
+              )}
+            </div>
+          )}
+        </>)}
       </main>
       {showAdminAlert && <AdminAlert onClose={() => setShowAdminAlert(false)} />}
     </div>

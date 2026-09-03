@@ -6,9 +6,9 @@
 // 3. AllocationSize is returned inline — no extra GetCompressedFileSize for most files.
 // 4. rayon::scope provides parallel BFS without extra dependencies.
 
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::ffi::c_void;
 
 use crate::scanner::types::{CancelFlag, FlatNode, ProgressReporter, ScanCounters, ScanResult};
 
@@ -158,7 +158,10 @@ fn nt_open_dir(path: &str) -> Option<*mut c_void> {
         security_qos: std::ptr::null_mut(),
     };
     let mut handle: *mut c_void = std::ptr::null_mut();
-    let mut isb = IoStatusBlock { u: IoStatusUnion { status: 0 }, information: 0 };
+    let mut isb = IoStatusBlock {
+        u: IoStatusUnion { status: 0 },
+        information: 0,
+    };
     let status = unsafe {
         NtOpenFile(
             &mut handle,
@@ -169,7 +172,11 @@ fn nt_open_dir(path: &str) -> Option<*mut c_void> {
             FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT,
         )
     };
-    if status == STATUS_SUCCESS { Some(handle) } else { None }
+    if status == STATUS_SUCCESS {
+        Some(handle)
+    } else {
+        None
+    }
 }
 
 struct DirEntry {
@@ -192,7 +199,10 @@ fn nt_list_dir(handle: *mut c_void) -> Vec<DirEntry> {
         let mut restart = 1u8;
 
         loop {
-            let mut isb = IoStatusBlock { u: IoStatusUnion { status: 0 }, information: 0 };
+            let mut isb = IoStatusBlock {
+                u: IoStatusUnion { status: 0 },
+                information: 0,
+            };
             let status = unsafe {
                 NtQueryDirectoryFile(
                     handle,
@@ -230,9 +240,23 @@ fn nt_list_dir(handle: *mut c_void) -> Vec<DirEntry> {
                     let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
                     let is_reparse = attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0;
 
-                    let physical = if is_dir { 0 } else { entry.allocation_size.unsigned_abs() };
-                    let logical  = if is_dir { 0 } else { entry.end_of_file.unsigned_abs() };
-                    results.push(DirEntry { name, is_dir, is_reparse, physical, logical });
+                    let physical = if is_dir {
+                        0
+                    } else {
+                        entry.allocation_size.unsigned_abs()
+                    };
+                    let logical = if is_dir {
+                        0
+                    } else {
+                        entry.end_of_file.unsigned_abs()
+                    };
+                    results.push(DirEntry {
+                        name,
+                        is_dir,
+                        is_reparse,
+                        physical,
+                        logical,
+                    });
                 }
 
                 if entry.next_entry_offset == 0 {
@@ -253,7 +277,9 @@ fn enumerate_dir<'scope>(
     parent_id: u32,
     state: &'scope State<'scope>,
 ) {
-    if state.cancel.load(Ordering::Relaxed) { return; }
+    if state.cancel.load(Ordering::Relaxed) {
+        return;
+    }
 
     let handle = match nt_open_dir(&path) {
         Some(h) => h,
@@ -261,14 +287,19 @@ fn enumerate_dir<'scope>(
     };
 
     let entries = nt_list_dir(handle);
-    unsafe { NtClose(handle); }
+    unsafe {
+        NtClose(handle);
+    }
 
     let mut new_nodes = Vec::with_capacity(entries.len());
     let mut subdirs: Vec<(String, u32)> = Vec::new();
 
     for entry in entries {
         let id = state.next_id.fetch_add(1, Ordering::Relaxed);
-        state.counters.byte_count.fetch_add(entry.physical, Ordering::Relaxed);
+        state
+            .counters
+            .byte_count
+            .fetch_add(entry.physical, Ordering::Relaxed);
         if !entry.is_dir {
             state.counters.file_count.fetch_add(1, Ordering::Relaxed);
         }
